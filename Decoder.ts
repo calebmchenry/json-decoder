@@ -37,6 +37,49 @@ export class Decoder {
 
 const UNEXPECTED_END = new SyntaxError("Unexpected end of JSON input");
 
+function isWhitespace(char: string): boolean {
+  return char === " " || char === "\t" || char === "\n" || char === "\r";
+}
+
+Deno.test({ name: "isWhitespace" }, () => {
+  assertEquals(isWhitespace(" "), true);
+  assertEquals(isWhitespace("\t"), true);
+  assertEquals(isWhitespace("\r"), true);
+  assertEquals(isWhitespace("\n"), true);
+  assertEquals(isWhitespace(""), false);
+  assertEquals(isWhitespace("n"), false);
+});
+
+async function consumeWhitespace(buffer: StreamBuffer): Promise<void> {
+  while (isWhitespace(await buffer.peek())) {
+    await buffer.next();
+  }
+}
+
+Deno.test({ name: "consumeWhitespace" }, async () => {
+	const buffer = mockStreamBuffer("1 2\t3\n4\r5 \r\t\n\t\r 6");
+	await consumeWhitespace(buffer)
+  assertEquals(await buffer.peek(), "1");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "2");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "3");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "4");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "5");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "6");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "");
+});
+
 async function decodeString(buffer: StreamBuffer): Promise<string | Error> {
   let jsonString = "";
   let escaped = false;
