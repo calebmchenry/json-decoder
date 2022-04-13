@@ -6,7 +6,7 @@ export class Buffer {
   constructor(str: string) {
     this.content = str;
   }
-
+	
   /** Returns the next character in the buffer and progresses the buffer by 1*/
   next(): string {
     const slice = this.content.substring(this.pointer, this.pointer + 1);
@@ -69,7 +69,7 @@ export class StreamBuffer {
   }
 }
 
-Deno.test({ name: "Buffer.next" }, async () => {
+Deno.test({ name: "StreamBuffer.next" }, async () => {
   const stream = new ReadableStream({
 		start(control) {
 				control.enqueue("foo")	
@@ -83,7 +83,7 @@ Deno.test({ name: "Buffer.next" }, async () => {
   assertEquals(await buffer.next(), "");
 });
 
-Deno.test({ name: "Buffer.peek" }, async () => {
+Deno.test({ name: "StreamBuffer.peek" }, async () => {
   const stream = new ReadableStream({
 		start(control) {
 				control.enqueue("foo")	
