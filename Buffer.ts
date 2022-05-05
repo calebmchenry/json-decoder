@@ -1,42 +1,5 @@
 import { assertEquals } from "https://deno.land/std/testing/asserts.ts";
-export class Buffer {
-  private content: string;
-  private pointer = 0;
-
-  constructor(str: string) {
-    this.content = str;
-  }
-	
-  /** Returns the next character in the buffer and progresses the buffer by 1*/
-  next(): string {
-    const slice = this.content.substring(this.pointer, this.pointer + 1);
-    this.pointer++;
-    return slice;
-  }
-
-  /** Returns the next character in the buffer and does not progress the buffer */
-  peek(): string {
-    return this.content.substring(this.pointer, this.pointer + 1);
-  }
-}
-
-Deno.test({ name: "Buffer.next" }, () => {
-  const buffer = new Buffer("foo");
-  assertEquals(buffer.next(), "f");
-  assertEquals(buffer.next(), "o");
-  assertEquals(buffer.next(), "o");
-  assertEquals(buffer.next(), "");
-});
-
-Deno.test({ name: "Buffer.peek" }, () => {
-  const buffer = new Buffer("foo");
-  assertEquals(buffer.peek(), "f");
-  assertEquals(buffer.peek(), "f");
-  assertEquals(buffer.next(), "f");
-  buffer.next();
-  buffer.next();
-  assertEquals(buffer.peek(), "");
-});
+import { mockReadableStream, mockStreamBuffer } from "./testutils.ts";
 
 export class StreamBuffer {
   private reader: ReadableStreamReader;
@@ -71,11 +34,11 @@ export class StreamBuffer {
 
 Deno.test({ name: "StreamBuffer.next" }, async () => {
   const stream = new ReadableStream({
-		start(control) {
-				control.enqueue("foo")	
-				control.close()
-		}
-	});
+    start(control) {
+      control.enqueue("foo");
+      control.close();
+    },
+  });
   const buffer = new StreamBuffer(stream);
   assertEquals(await buffer.next(), "f");
   assertEquals(await buffer.next(), "o");
@@ -85,16 +48,59 @@ Deno.test({ name: "StreamBuffer.next" }, async () => {
 
 Deno.test({ name: "StreamBuffer.peek" }, async () => {
   const stream = new ReadableStream({
-		start(control) {
-				control.enqueue("foo")	
-				control.close()
-		}
-	});
+    start(control) {
+      control.enqueue("foo");
+      control.close();
+    },
+  });
   const buffer = new StreamBuffer(stream);
   assertEquals(await buffer.peek(), "f");
   assertEquals(await buffer.peek(), "f");
   assertEquals(await buffer.next(), "f");
   await buffer.next();
   await buffer.next();
+  assertEquals(await buffer.peek(), "");
+});
+
+function isWhitespace(char: string): boolean {
+  return char === " " || char === "\t" || char === "\n" || char === "\r";
+}
+
+Deno.test({ name: "isWhitespace" }, () => {
+  assertEquals(isWhitespace(" "), true);
+  assertEquals(isWhitespace("\t"), true);
+  assertEquals(isWhitespace("\r"), true);
+  assertEquals(isWhitespace("\n"), true);
+  assertEquals(isWhitespace(""), false);
+  assertEquals(isWhitespace("n"), false);
+});
+
+async function consumeWhitespace(buffer: StreamBuffer): Promise<void> {
+  while (isWhitespace(await buffer.peek())) {
+    await buffer.next();
+  }
+}
+
+Deno.test({ name: "consumeWhitespace" }, async () => {
+  const buffer = mockStreamBuffer("1 2\t3\n4\r5 \r\t\n\t\r 6");
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "1");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "2");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "3");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "4");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "5");
+  await buffer.next();
+  await consumeWhitespace(buffer);
+  assertEquals(await buffer.peek(), "6");
+  await buffer.next();
+  await consumeWhitespace(buffer);
   assertEquals(await buffer.peek(), "");
 });
