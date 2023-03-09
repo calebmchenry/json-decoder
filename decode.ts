@@ -1,19 +1,19 @@
 import { StreamBuffer } from "./Buffer.ts";
-import {
-  assertEquals,
-  assertInstanceOf,
-} from "https://deno.land/std@0.134.0/testing/asserts.ts";
-import { mockReadableStream, mockStreamBuffer } from './testutils.ts'
+import { describe, it } from "https://deno.land/std/testing/bdd.ts";
+import { mockStreamBuffer } from "./testutils.ts";
+import { assertNever } from "./utils.ts";
+import { Err } from "./err.ts";
+import { assertEquals } from "https://deno.land/std@0.134.0/testing/asserts.ts";
 
 export const Decode = {
-	string:  decodeString,
-	number: decodeNumber,
-	boolean: decodeBoolean,
-	null: decodeNull,
-	object: decodeObject,
-	array: decodeArray,
-	value: decodeValue
-}
+  string: decodeString,
+  number: decodeNumber,
+  boolean: decodeBoolean,
+  null: decodeNull,
+  object: decodeObject,
+  array: decodeArray,
+  value: decodeValue,
+};
 
 type DecodedJSONValue = boolean | null | string | number | unknown[] | {
   [key: string]: unknown;
@@ -27,7 +27,7 @@ type JSONValue =
   | "JSONArray"
   | "JSONObject";
 
-async function whichJSONValue(
+export async function whichJSONValue(
   buffer: StreamBuffer,
 ): Promise<JSONValue | undefined> {
   const firstChar = await buffer.peek();
@@ -38,25 +38,17 @@ async function whichJSONValue(
   if (isNumber(firstChar)) return "JSONNumber";
   if (firstChar === "[") return "JSONArray";
   if (firstChar === "{") return "JSONObject";
-  return Promise.resolve(undefined);
+  return Promise.reject(
+    new Error(`[DEBUG]: unexpected start of token "${firstChar}"`),
+  );
 }
 
-Deno.test({ name: "whichJSONValue" }, async () => {
-  assertEquals(await whichJSONValue(mockStreamBuffer("true")), "JSONBoolean");
-  assertEquals(await whichJSONValue(mockStreamBuffer("false")), "JSONBoolean");
-  assertEquals(await whichJSONValue(mockStreamBuffer("null")), "JSONNull");
-  assertEquals(await whichJSONValue(mockStreamBuffer('"Hello"')), "JSONString");
-  assertEquals(await whichJSONValue(mockStreamBuffer("42")), "JSONNumber");
-  assertEquals(await whichJSONValue(mockStreamBuffer("[ 4 ]")), "JSONArray");
-  assertEquals(await whichJSONValue(mockStreamBuffer("{ 4 }")), "JSONObject");
-  assertEquals(await whichJSONValue(mockStreamBuffer("bad")), undefined);
-});
-
-async function decodeValue(
+export async function decodeValue(
   buffer: StreamBuffer,
 ): Promise<DecodedJSONValue | Error> {
-  await consumeWhitespace(buffer);
-  switch (await whichJSONValue(buffer)) {
+  await buffer.consumeWhitespace();
+  const type = await whichJSONValue(buffer);
+  switch (type) {
     case "JSONBoolean":
       return await decodeBoolean(buffer);
     case "JSONNull":
@@ -71,25 +63,17 @@ async function decodeValue(
       return await decodeObject(buffer);
     default:
       return Promise.reject(
-        new Error(`[DEBUG]: unknown json value "${buffer}"`),
+        new Error(`[DEBUG]: unknown json value "${type}"`),
       );
   }
 }
 
-Deno.test({ name: "decodeValue" }, async () => {
-  assertEquals(await decodeValue(mockStreamBuffer("true")), true);
-  assertEquals(await decodeValue(mockStreamBuffer("false")), false);
-  assertEquals(await decodeValue(mockStreamBuffer("null")), null);
-  assertEquals(await decodeValue(mockStreamBuffer('"Hello"')), "Hello");
-  assertEquals(await decodeValue(mockStreamBuffer("42")), 42);
-  assertEquals(await decodeValue(mockStreamBuffer("[]")), []);
-  assertEquals(await decodeValue(mockStreamBuffer("{}")), {});
-});
-
-async function decodeArray(buffer: StreamBuffer): Promise<unknown[] | Error> {
+export async function decodeArray(
+  buffer: StreamBuffer,
+): Promise<unknown[] | Error> {
   const firstChar = await buffer.next();
   if (firstChar !== "[") {
-    return unexpectedToken(firstChar);
+    return Err.unexpectedToken(firstChar);
   }
 
   let first = true;
@@ -98,7 +82,7 @@ async function decodeArray(buffer: StreamBuffer): Promise<unknown[] | Error> {
     if (!first) {
       const comma = await buffer.next();
       if (comma != ",") {
-        return unexpectedToken(comma);
+        return Err.unexpectedToken(comma);
       }
     }
     try {
@@ -108,41 +92,22 @@ async function decodeArray(buffer: StreamBuffer): Promise<unknown[] | Error> {
       return err;
     }
     first = false;
-    await consumeWhitespace(buffer);
+    await buffer.consumeWhitespace();
   }
 
   const closingChar = await buffer.next();
   if (closingChar !== "]") {
-    return unexpectedToken(closingChar);
+    return Err.unexpectedToken(closingChar);
   }
   return arr;
 }
 
-Deno.test({ name: "decodeArray" }, async () => {
-  assertEquals(await decodeArray(mockStreamBuffer("[]")), []);
-  assertEquals(await decodeArray(mockStreamBuffer("[true]")), [true]);
-  assertEquals(
-    await decodeArray(mockStreamBuffer('[ true , false , 4 , "foo" , null ]')),
-    [
-      true,
-      false,
-      4,
-      "foo",
-      null,
-    ],
-  );
-  assertEquals(
-    await decodeArray(mockStreamBuffer('[["foo", "bar"], {"fizz": "buzz"}]')),
-    [["foo", "bar"], { "fizz": "buzz" }],
-  );
-});
-
-async function decodeObject(
+export async function decodeObject(
   buffer: StreamBuffer,
 ): Promise<{ [key: string]: unknown } | Error> {
   const firstChar = await buffer.next();
   if (firstChar !== "{") {
-    return unexpectedToken(firstChar);
+    return Err.unexpectedToken(firstChar);
   }
 
   let first = true;
@@ -151,49 +116,121 @@ async function decodeObject(
     if (!first) {
       const comma = await buffer.next();
       if (comma != ",") {
-        return unexpectedToken(comma);
+        return Err.unexpectedToken(comma);
       }
     }
     // TODO(calebmchenry): keys have more restrictions
-    await consumeWhitespace(buffer);
+    await buffer.consumeWhitespace();
     const key = await decodeString(buffer);
     if (key instanceof Error) return key;
-    await consumeWhitespace(buffer);
+    await buffer.consumeWhitespace();
     const colon = await buffer.next();
-    if (colon !== ":") return unexpectedToken(colon);
+    if (colon !== ":") return Err.unexpectedToken(colon);
 
     const val = await decodeValue(buffer);
     if (val instanceof Error) return val;
     obj[key] = val;
     first = false;
-    await consumeWhitespace(buffer);
+    await buffer.consumeWhitespace();
   }
 
   const closingChar = await buffer.next();
   if (closingChar !== "}") {
-    return unexpectedToken(closingChar);
+    return Err.unexpectedToken(closingChar);
   }
   return obj;
 }
 
-Deno.test({ name: "decodeObject" }, async () => {
-  assertEquals(await decodeObject(mockStreamBuffer("{}")), {});
-  assertEquals(await decodeObject(mockStreamBuffer('{ "foo" : "bar"}')), {
-    foo: "bar",
-  });
-  assertEquals(
-    await decodeObject(
-      mockStreamBuffer('{ "foo" : {"bar": {"fizz": "buzz"}} }'),
-    ),
-    { foo: { bar: { fizz: "buzz" } } },
-  );
-  assertEquals(
-    await decodeObject(
-      mockStreamBuffer('{ "foo" : [["bar"],{"fizz": "buzz"}] }'),
-    ),
-    { foo: [["bar"], { fizz: "buzz" }] },
-  );
-});
+const stringifiedNull = "null";
+export async function decodeNull(buffer: StreamBuffer): Promise<null | Error> {
+  for (let i = 0; i < stringifiedNull.length; i++) {
+    const char = await buffer.next();
+    if (char === "") return Err.unexpectedEnd();
+    if (char !== stringifiedNull[i]) {
+      return Err.unexpectedToken(char);
+    }
+  }
+  return null;
+}
+
+const stringifiedTrue = "true";
+const stringifiedFalse = "false";
+export async function decodeBoolean(
+  buffer: StreamBuffer,
+): Promise<boolean | Error> {
+  const firstChar = await buffer.peek();
+  const match = firstChar === "t" ? stringifiedTrue : stringifiedFalse;
+  for (let i = 0; i < match.length; i++) {
+    const char = await buffer.next();
+    if (char === undefined) return Err.unexpectedEnd();
+    if (char !== match[i]) {
+      return Err.unexpectedToken(char);
+    }
+  }
+  return match === stringifiedTrue;
+}
+
+export async function decodeNumber(
+  buffer: StreamBuffer,
+): Promise<number | Error> {
+  let jsonNumber = "";
+  let hasDecimal = false;
+  let i = -1;
+  while (await buffer.peek() === "." || isNumber(await buffer.peek())) {
+    i++;
+    const char = await buffer.next();
+    if (char === "") return Err.unexpectedEnd();
+    if (char === ".") {
+      if (i === 0) {
+        return Err.unexpectedToken(char);
+      }
+      if (hasDecimal) {
+        return Err.unexpectedToken(char);
+      }
+      hasDecimal = true;
+      jsonNumber += char;
+      continue;
+    }
+    if (!isNumber(char)) break;
+    jsonNumber += char;
+  }
+  return parseFloat(jsonNumber);
+}
+
+export async function decodeString(buffer: StreamBuffer) {
+  let jsonString = "";
+  let escaped = false;
+  // consume beginning "
+  await buffer.next();
+  while (true) {
+    const char = await buffer.next();
+    if (char === "") return Err.unexpectedEnd();
+    if (escaped) {
+      if (char === '"') {
+        jsonString += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        jsonString += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "n") {
+        jsonString += "\n";
+        escaped = false;
+      }
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') break;
+    jsonString += char;
+  }
+  return jsonString;
+}
 
 //
 // value -> EOF
@@ -233,7 +270,7 @@ export type JSONToken =
 export const JSONToken = {
   key(key: string): JSONKeyToken {
     return { kind: "KEY", value: key };
-	} ,
+  },
   value(value: JSONPrimativeValue): JSONValueToken {
     return { kind: "VALUE", value };
   },
@@ -289,19 +326,6 @@ export const JSONToken = {
   },
 };
 
-function assertNever(_: never) {}
-
-
-const EOF = new Error("EOF");
-
-function unexpectedEnd() {
-  return new SyntaxError("Unexpected end of JSON input");
-}
-
-function unexpectedToken(char: string) {
-  return new SyntaxError(`Unexpected token ${char} in JSON position x`);
-}
-
 const allowedNumbers = new Set([
   "0",
   "1",
@@ -318,312 +342,136 @@ function isNumber(char: string): boolean {
   return allowedNumbers.has(char);
 }
 
-async function parseValue(buffer: StreamBuffer): Promise<[string| number | boolean | null | undefined, State] | Error> {
-	await consumeWhitespace(buffer)
-	const char = await buffer.peek()
-	if(char === '{') return [undefined, 'Key']
-	if(char === '[') return [undefined, 'Value']
-	if(char === '"') {
-		const val = await decodeString(buffer)
-		if(val instanceof Error ) return val
-		return [val, 'EOF']
-	}
-	if(isNumber(char)) {
-		const val = await decodeNumber(buffer)
-		if(val instanceof Error ) return val
-		return [val, 'EOF']
-	}
-	if(char === 't' || char === 'f') {
-		const val = await decodeBoolean(buffer)
-		if(val instanceof Error ) return val
-		return [val, 'EOF']
-	}
-	if(char === 'n') {
-		const val = await decodeNull(buffer)
-		if(val instanceof Error ) return val
-		return [val, 'EOF']
-	}
-	return unexpectedToken(char)
-}
-
-const stringifiedNull = "null";
-async function decodeNull(buffer: StreamBuffer): Promise<null | Error> {
-  for (let i = 0; i < stringifiedNull.length; i++) {
-    const char = await buffer.next();
-    if (char === "") return unexpectedEnd();
-    if (char !== stringifiedNull[i]) {
-      return unexpectedToken(char);
-    }
+async function parseValue(
+  buffer: StreamBuffer,
+): Promise<[string | number | boolean | null | undefined, State] | Error> {
+  await buffer.consumeWhitespace();
+  const char = await buffer.peek();
+  if (char === "{") return [undefined, "Key"];
+  if (char === "[") return [undefined, "Value"];
+  if (char === '"') {
+    const val = await decodeString(buffer);
+    if (val instanceof Error) return val;
+    return [val, "EOF"];
   }
-  return null;
-}
-
-Deno.test({ name: "decodeNull" }, async () => {
-  assertEquals(await decodeNull(mockStreamBuffer("null")), null);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("n")), SyntaxError);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("nu")), SyntaxError);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("nul")), SyntaxError);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("fake")), SyntaxError);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("xull")), SyntaxError);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("nxll")), SyntaxError);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("nuxl")), SyntaxError);
-  assertInstanceOf(await decodeNull(mockStreamBuffer("nulx")), SyntaxError);
-});
-
-const stringifiedTrue = "true";
-const stringifiedFalse = "false";
-async function decodeBoolean(buffer: StreamBuffer): Promise<boolean | Error> {
-  const firstChar = await buffer.peek();
-  const match = firstChar === "t" ? stringifiedTrue : stringifiedFalse;
-  for (let i = 0; i < match.length; i++) {
-    const char = await buffer.next();
-    if (char === undefined) return unexpectedEnd();
-    if (char !== match[i]) {
-      return unexpectedToken(char);
-    }
+  if (isNumber(char)) {
+    const val = await decodeNumber(buffer);
+    if (val instanceof Error) return val;
+    return [val, "EOF"];
   }
-  return match === stringifiedTrue;
-}
-
-Deno.test({ name: "decodeBoolean" }, async () => {
-  assertEquals(await decodeBoolean(mockStreamBuffer("true")), true);
-  assertEquals(await decodeBoolean(mockStreamBuffer("tru")), unexpectedEnd());
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("xrue")), SyntaxError);
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("txue")), SyntaxError);
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("trxe")), SyntaxError);
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("trux")), SyntaxError);
-  assertEquals(await decodeBoolean(mockStreamBuffer("false")), false);
-  assertEquals(await decodeBoolean(mockStreamBuffer("fals")), unexpectedEnd());
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("xalse")), SyntaxError);
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("fxlse")), SyntaxError);
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("faxse")), SyntaxError);
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("falxe")), SyntaxError);
-  assertInstanceOf(await decodeBoolean(mockStreamBuffer("falsx")), SyntaxError);
-});
-
-async function decodeNumber(buffer: StreamBuffer): Promise<number | Error> {
-  let jsonNumber = "";
-  let hasDecimal = false;
-  let i = -1;
-  while (await buffer.peek() === "." || isNumber(await buffer.peek())) {
-    i++;
-    const char = await buffer.next();
-    if (char === "") return unexpectedEnd();
-    if (char === ".") {
-      if (i === 0) {
-        return unexpectedToken(char);
-      }
-      if (hasDecimal) {
-        return unexpectedToken(char);
-      }
-      hasDecimal = true;
-      jsonNumber += char;
-      continue;
-    }
-    if (!isNumber(char)) break;
-    jsonNumber += char;
+  if (char === "t" || char === "f") {
+    const val = await decodeBoolean(buffer);
+    if (val instanceof Error) return val;
+    return [val, "EOF"];
   }
-  return parseFloat(jsonNumber);
-}
-
-Deno.test({ name: "decodeNumber" }, async () => {
-  assertEquals(await decodeNumber(mockStreamBuffer("0")), 0);
-  assertEquals(await decodeNumber(mockStreamBuffer("1")), 1);
-  assertEquals(await decodeNumber(mockStreamBuffer("123")), 123);
-  assertEquals(await decodeNumber(mockStreamBuffer("0.5")), 0.5);
-  assertInstanceOf(await decodeNumber(mockStreamBuffer("0.5.5")), SyntaxError);
-  assertInstanceOf(await decodeNumber(mockStreamBuffer(".1")), SyntaxError);
-});
-
-async function decodeString(buffer: StreamBuffer) {
-  let jsonString = "";
-  let escaped = false;
-  // consume beginning "
-  await buffer.next();
-  while (true) {
-    const char = await buffer.next();
-    if (char === "") return unexpectedEnd();
-    if (escaped) {
-      if (char === '"') {
-        jsonString += char;
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        jsonString += char;
-        escaped = false;
-        continue;
-      }
-      if (char === "n") {
-        jsonString += "\n";
-        escaped = false;
-      }
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (char === '"') break;
-    jsonString += char;
+  if (char === "n") {
+    const val = await decodeNull(buffer);
+    if (val instanceof Error) return val;
+    return [val, "EOF"];
   }
-  return jsonString;
+  return Err.unexpectedToken(char);
 }
 
-Deno.test('decodeString', async () => {
-	const fooStream = mockStreamBuffer(JSON.stringify("foo"))
-	assertEquals(await decodeString(fooStream), "foo")
-
-	const quoteStream = mockStreamBuffer(JSON.stringify('f"oo'))
-	assertEquals(await decodeString(quoteStream), 'f"oo')
-})
-
-async function decodeKey(buffer: StreamBuffer) {
-  const str = await decodeString(buffer)	
-	if(str instanceof Error) return str
-	return  JSONToken.key(str)
+async function parseKey(buffer: StreamBuffer) {
+  const str = await decodeString(buffer);
+  if (str instanceof Error) return str;
+  return JSONToken.key(str);
 }
 
-Deno.test('decodeKey', async () => {
-	const fooStream = mockStreamBuffer(JSON.stringify("foo"))
-	assertEquals(await decodeKey(fooStream), {kind: "KEY", value: "foo"})
-})
-
-async function decodeComma(buffer: StreamBuffer): Promise<',' | Error> {
-	await consumeWhitespace(buffer)
-	const comma = await buffer.next()
-	if(comma !== ',') return unexpectedToken(comma)
-	return comma
+async function parseComma(buffer: StreamBuffer): Promise<"," | Error> {
+  await buffer.consumeWhitespace();
+  const comma = await buffer.next();
+  if (comma !== ",") return Err.unexpectedToken(comma);
+  return comma;
 }
 
-Deno.test('decodeComma', async () => {
-	const stream = mockStreamBuffer("    ,")
-	assertEquals(await decodeComma(stream), ",")
-})
-
-async function parseObjectClose(buffer: StreamBuffer): Promise<'}' | Error > {
-	await consumeWhitespace(buffer)
-	const closeCurly = await buffer.next()
-	if(closeCurly !== '}') return unexpectedToken(closeCurly)
-	return closeCurly
+async function parseObjectClose(buffer: StreamBuffer): Promise<"}" | Error> {
+  await buffer.consumeWhitespace();
+  const closeCurly = await buffer.next();
+  if (closeCurly !== "}") return Err.unexpectedToken(closeCurly);
+  return closeCurly;
 }
-
-Deno.test('parseObjectClose', async () => {
-	const stream = mockStreamBuffer("    }")
-	assertEquals(await parseObjectClose(stream), "}")
-})
 
 async function parseObjectCloseOrKey(buffer: StreamBuffer) {
-	await consumeWhitespace(buffer)
-	const char = await buffer.peek()
-	if(char === '}') {
-		await parseObjectClose(buffer) 
-		// TODO(calebmchenry): this isn't right. This should signafy to unwind the recursion
-		return 'EOF'
-	}
-	await decodeKey(buffer)
-	return 'Value'
+  await buffer.consumeWhitespace();
+  const char = await buffer.peek();
+  if (char === "}") {
+    await parseObjectClose(buffer);
+    // TODO(calebmchenry): this isn't right. This should signafy to unwind the recursion
+    return "EOF";
+  }
+  await parseKey(buffer);
+  return "Value";
 }
 
-Deno.test('parseObjectCloseOrKey', async () => {
-	const commaStream = mockStreamBuffer('    "foo"')
-	assertEquals(await parseObjectCloseOrKey(commaStream), "Value")
-	const closeStream = mockStreamBuffer("    }")
-	assertEquals(await parseObjectCloseOrKey(closeStream), "EOF")
-})
-
-async function parseObjectCloseOrComma(buffer: StreamBuffer): Promise< State | Error> {
-	await consumeWhitespace(buffer)
-	const char = await buffer.peek()
-	if(char === '}') {
-		await parseObjectClose(buffer) 
-		// TODO(calebmchenry): this isn't right. This should signafy to unwind the recursion
-		return 'EOF'
-	}
-	if(char === ',') {
-		await decodeComma(buffer)
-		return 'Value'
-	}
-	return unexpectedToken(char)
+async function parseObjectCloseOrComma(
+  buffer: StreamBuffer,
+): Promise<State | Error> {
+  await buffer.consumeWhitespace();
+  const char = await buffer.peek();
+  if (char === "}") {
+    await parseObjectClose(buffer);
+    // TODO(calebmchenry): this isn't right. This should signafy to unwind the recursion
+    return "EOF";
+  }
+  if (char === ",") {
+    await parseComma(buffer);
+    return "Value";
+  }
+  return Err.unexpectedToken(char);
 }
-
-Deno.test('parseObjectCloseOrComma', async () => {
-	const commaStream = mockStreamBuffer("    ,")
-	assertEquals(await parseObjectCloseOrComma(commaStream), "Value")
-	const closeStream = mockStreamBuffer("    }")
-	assertEquals(await parseObjectCloseOrComma(closeStream), "EOF")
-})
 
 async function parseArrayCloserOrComma(buffer: StreamBuffer) {
-	await consumeWhitespace(buffer)
-	const char = await buffer.peek()
-	if(char === ']') {
-		await parseObjectClose(buffer) 
-		// TODO(calebmchenry): this isn't right. This should signafy to unwind the recursion
-		return 'EOF'
-	}
-	if(char === ',') {
-		await decodeComma(buffer)
-		return 'Value'
-	}
-	return unexpectedToken(char)
+  await buffer.consumeWhitespace();
+  const char = await buffer.peek();
+  if (char === "]") {
+    await parseObjectClose(buffer);
+    // TODO(calebmchenry): this isn't right. This should signafy to unwind the recursion
+    return "EOF";
+  }
+  if (char === ",") {
+    await parseComma(buffer);
+    return "Value";
+  }
+  return Err.unexpectedToken(char);
 }
-
-Deno.test('parseArrayCloseOrComma', async () => {
-	const commaStream = mockStreamBuffer("    ,")
-	assertEquals(await parseArrayCloserOrComma(commaStream), "Value")
-	const closeStream = mockStreamBuffer("    ]")
-	assertEquals(await parseArrayCloserOrComma(closeStream), "EOF")
-})
 
 function parseEOF(): Promise<Error> {
-	return  Promise.resolve(EOF)
+  return Promise.resolve(Err.EOF);
 }
 
-Deno.test('parseEOF', async () => {
-	assertEquals(await parseEOF(), EOF)
-})
-
-function isWhitespace(char: string): boolean {
-  return char === " " || char === "\t" || char === "\n" || char === "\r";
-}
-
-Deno.test({ name: "isWhitespace" }, () => {
-  assertEquals(isWhitespace(" "), true);
-  assertEquals(isWhitespace("\t"), true);
-  assertEquals(isWhitespace("\r"), true);
-  assertEquals(isWhitespace("\n"), true);
-  assertEquals(isWhitespace(""), false);
-  assertEquals(isWhitespace("n"), false);
+describe("Parse", () => {
+  it("parseKey", async () => {
+    const fooStream = mockStreamBuffer(JSON.stringify("foo"));
+    assertEquals(await parseKey(fooStream), { kind: "KEY", value: "foo" });
+  });
+  it("parseComma", async () => {
+    const stream = mockStreamBuffer("    ,");
+    assertEquals(await parseComma(stream), ",");
+  });
+  it("parseObjectClose", async () => {
+    const stream = mockStreamBuffer("    }");
+    assertEquals(await parseObjectClose(stream), "}");
+  });
+  it("parseObjectCloseOrKey", async () => {
+    const commaStream = mockStreamBuffer('    "foo"');
+    assertEquals(await parseObjectCloseOrKey(commaStream), "Value");
+    const closeStream = mockStreamBuffer("    }");
+    assertEquals(await parseObjectCloseOrKey(closeStream), "EOF");
+  });
+  it("parseObjectCloseOrComma", async () => {
+    const commaStream = mockStreamBuffer("    ,");
+    assertEquals(await parseObjectCloseOrComma(commaStream), "Value");
+    const closeStream = mockStreamBuffer("    }");
+    assertEquals(await parseObjectCloseOrComma(closeStream), "EOF");
+  });
+  it("parseArrayCloseOrComma", async () => {
+    const commaStream = mockStreamBuffer("    ,");
+    assertEquals(await parseArrayCloserOrComma(commaStream), "Value");
+    const closeStream = mockStreamBuffer("    ]");
+    assertEquals(await parseArrayCloserOrComma(closeStream), "EOF");
+  });
+  it("EOF", async () => {
+    assertEquals(await parseEOF(), Err.EOF);
+  });
 });
-async function consumeWhitespace(buffer: StreamBuffer): Promise<void> {
-	// TODO(calebmchenry): consider tracking col and row with consume whitespace
-  while (isWhitespace(await buffer.peek())) {
-    await buffer.next();
-  }
-}
-
-Deno.test({ name: "consumeWhitespace" }, async () => {
-  const buffer = mockStreamBuffer("1 2\t3\n4\r5 \r\t\n\t\r 6");
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "1");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "2");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "3");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "4");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "5");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "6");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "");
-});
-

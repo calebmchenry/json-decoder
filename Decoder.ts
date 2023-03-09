@@ -1,11 +1,9 @@
-import {
-  assertEquals,
-  assertInstanceOf,
-} from "https://deno.land/std@0.134.0/testing/asserts.ts";
+import { assertEquals } from "https://deno.land/std@0.134.0/testing/asserts.ts";
 import { StreamBuffer } from "./Buffer.ts";
-import { describe, it } from "https://deno.land/std@0.136.0/testing/bdd.ts";
-import {mockStreamBuffer, mockReadableStream} from './testutils.ts'
-import {Decode} from './decode.ts'
+import { describe, it } from "https://deno.land/std/testing/bdd.ts";
+import { mockReadableStream } from "./testutils.ts";
+import { Decode } from "./decode.ts";
+import { PrimativeValue, Token } from "./token.ts";
 
 export type JSONValue =
   | "JSONBoolean"
@@ -15,90 +13,14 @@ export type JSONValue =
   | "JSONArray"
   | "JSONObject";
 
-export type JSONPrimativeValue = string | number | boolean | null;
-
-export type JSONValueToken = { kind: "VALUE"; value: JSONPrimativeValue };
-export type JSONOpenObjectToken = { kind: "{"; value: "{" };
-export type JSONKeyToken = { kind: "KEY"; value: string };
-export type JSONCloseObjectToken = { kind: "}"; value: "}" };
-export type JSONOpenArrayToken = { kind: "["; value: "[" };
-export type JSONCloseArrayToken = { kind: "]"; value: "]" };
-
-export type JSONToken =
-  | JSONValueToken
-  | JSONOpenObjectToken
-  | JSONKeyToken
-  | JSONCloseObjectToken
-  | JSONOpenArrayToken
-  | JSONCloseArrayToken;
-export const JSONToken = {
-  key(key: string): JSONKeyToken {
-    return { kind: "KEY", value: key };
-	} ,
-  value(value: JSONPrimativeValue): JSONValueToken {
-    return { kind: "VALUE", value };
-  },
-  openObject(): JSONOpenObjectToken {
-    return { kind: "{", value: "{" };
-  },
-  closeObject(): JSONCloseObjectToken {
-    return { kind: "}", value: "}" };
-  },
-  openArray(): JSONOpenArrayToken {
-    return { kind: "[", value: "[" };
-  },
-  closeArray(): JSONCloseArrayToken {
-    return { kind: "]", value: "]" };
-  },
-  match(
-    token: JSONToken,
-    matches: {
-      "key"?: () => void;
-      "value"?: () => void;
-      "{"?: () => void;
-      "}"?: () => void;
-      "["?: () => void;
-      "]"?: () => void;
-      "_"?: () => void;
-    } = {
-      "key": undefined,
-      "value": undefined,
-      "{": undefined,
-      "}": undefined,
-      "[": undefined,
-      "]": undefined,
-      "_": () => {},
-    },
-  ): void {
-    const fn = () => {};
-    switch (token.kind) {
-      case "KEY":
-        return (matches.key ?? matches["_"] ?? fn)();
-      case "VALUE":
-        return (matches.value ?? matches["_"] ?? fn)();
-      case "{":
-        return (matches["{"] ?? matches["_"] ?? fn)();
-      case "}":
-        return (matches["}"] ?? matches["_"] ?? fn)();
-      case "[":
-        return (matches["["] ?? matches["_"] ?? fn)();
-      case "]":
-        return (matches["]"] ?? matches["_"] ?? fn)();
-      default:
-        assertNever(token);
-    }
-  },
-};
-
 const EOF = new Error("End of File");
-function assertNever(_: never) {}
 
 // value -> EOF
 // |
 // -> { -> }
 //      -> key -> value -> , -> key -> value
 //											-> }
-// -> [ -> ] 
+// -> [ -> ]
 //      -> value -> ]
 //               -> , -> value
 // -> primative
@@ -133,7 +55,7 @@ function assertNever(_: never) {}
  */
 export class Decoder {
   #buffer: StreamBuffer;
-  #nextTokenStack: Array<() => Promise<JSONToken | Error>> = [
+  #nextTokenStack: Array<() => Promise<Token | Error>> = [
     this.#value.bind(this),
   ];
   constructor(stream: ReadableStream) {
@@ -141,7 +63,7 @@ export class Decoder {
   }
 
   async decode(): Promise<unknown> {
-    await consumeWhitespace(this.#buffer);
+    await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.peek();
     if (char === ",") {
       await this.#buffer.next();
@@ -151,153 +73,117 @@ export class Decoder {
 
   /** Returns true if there are more tokens to be consumed */
   async more(): Promise<boolean> {
-    await consumeWhitespace(this.#buffer);
+    await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.peek();
-    return (char === ",")
-      ? Promise.resolve(true)
-      : Promise.resolve(false);
+    return (char === ",") ? Promise.resolve(true) : Promise.resolve(false);
   }
 
   /** Consumes token */
-  token(): Promise<JSONToken | Error> {
+  token(): Promise<Token | Error> {
     const fn = this.#nextTokenStack.pop();
     if (fn == null) return Promise.resolve(EOF);
     return fn();
   }
 
   // Private API
-  async #value(): Promise<JSONToken | Error> {
-    await consumeWhitespace(this.#buffer);
+  async #value(): Promise<Token | Error> {
+    await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.peek();
     if (char === "{") {
+      // consume {
+      await this.#buffer.next();
       this.#nextTokenStack.push(this.#endObjectOrValue.bind(this));
       this.#nextTokenStack.push(this.#value.bind(this));
       this.#nextTokenStack.push(this.#key.bind(this));
-      return JSONToken.openObject();
+      return Token.openObject();
     }
     if (char === "[") {
+      // consume [
+      await this.#buffer.next();
       this.#nextTokenStack.push(this.#endArrayOrValue.bind(this));
       this.#nextTokenStack.push(this.#value.bind(this));
-      return JSONToken.openArray();
+      return Token.openArray();
     }
     const value = await Decode.value(this.#buffer);
     if (value instanceof Error) return value;
     // Since we have already manually checked for { and [ then we know this
     // value can't be an array or object and therefore must be a primative value
-    return JSONToken.value(value as JSONPrimativeValue);
+    return Token.value(value as PrimativeValue);
   }
 
-  async #key(): Promise<JSONToken | Error> {
+  async #key(): Promise<Token | Error> {
+    await this.#buffer.consumeWhitespace();
     const value = await Decode.string(this.#buffer);
     if (value instanceof Error) return value;
-    consumeWhitespace(this.#buffer);
+    await this.#buffer.consumeWhitespace();
     const colon = await this.#buffer.next();
     if (colon != ":") return unexpectedToken(colon);
-    this.#nextTokenStack.push(this.#value.bind(this));
-    return JSONToken.key(value);
+    return Token.key(value);
   }
 
-  async #endObjectOrValue(): Promise<JSONToken | Error> {
-    await consumeWhitespace(this.#buffer);
+  async #endObjectOrValue(): Promise<Token | Error> {
+    await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.peek();
     if (char === "}") return this.#endObject();
     if (char === ",") {
       this.#nextTokenStack.push(this.#endObjectOrValue.bind(this));
-      return this.#value();
+      this.#nextTokenStack.push(this.#value.bind(this));
+      return this.#key();
     }
     return unexpectedToken(char);
   }
 
-  async #endObject(): Promise<JSONToken | Error> {
-    await consumeWhitespace(this.#buffer);
+  async #endObject(): Promise<Token | Error> {
+    await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.next();
     if (char !== "}") return unexpectedToken(char);
-    return JSONToken.closeObject();
+    return Token.closeObject();
   }
 
-  async #endArrayOrValue(): Promise<JSONToken | Error> {
-    await consumeWhitespace(this.#buffer);
+  async #endArrayOrValue(): Promise<Token | Error> {
+    await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.peek();
     if (char === "]") return this.#endArray();
     if (char === ",") {
+      // consume ,
+      await this.#buffer.next();
       this.#nextTokenStack.push(this.#endArrayOrValue.bind(this));
       return this.#value();
     }
     return unexpectedToken(char);
   }
 
-  async #endArray(): Promise<JSONToken | Error> {
-    await consumeWhitespace(this.#buffer);
+  async #endArray(): Promise<Token | Error> {
+    await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.next();
     if (char !== "]") return unexpectedToken(char);
-    return JSONToken.closeArray();
+    return Token.closeArray();
+  }
+
+  async debug(): Promise<void> {
+    console.log("\n[DEBUG] Decoder state:");
+    console.log(await this.#buffer.peek());
+    console.log(this.#nextTokenStack);
   }
 }
 
 describe("Decoder", () => {
   describe("token", () => {
-    it("token", async () => {
-      const stream = mockReadableStream('{"foo": ["bar", true, 42}');
+    it("returns tokens", async () => {
+      const stream = mockReadableStream('{"foo": ["bar", true, 42]}');
       const dec = new Decoder(stream);
-      assertEquals(await dec.token(), JSONToken.openObject());
-      assertEquals(await dec.token(), JSONToken.key("foo"));
-      assertEquals(await dec.token(), JSONToken.openArray());
+      assertEquals(await dec.token(), Token.openObject());
+      assertEquals(await dec.token(), Token.key("foo"));
+      assertEquals(await dec.token(), Token.openArray());
+      assertEquals(await dec.token(), Token.value("bar"));
+      assertEquals(await dec.token(), Token.value(true));
+      assertEquals(await dec.token(), Token.value(42));
+      assertEquals(await dec.token(), Token.closeArray());
+      assertEquals(await dec.token(), Token.closeObject());
     });
   });
 });
 
-function unexpectedEnd() {
-  return new SyntaxError("Unexpected end of JSON input");
-}
-
 function unexpectedToken(char: string) {
   return new SyntaxError(`Unexpected token ${char} in JSON position x`);
 }
-
-function isWhitespace(char: string): boolean {
-  return char === " " || char === "\t" || char === "\n" || char === "\r";
-}
-
-Deno.test({ name: "isWhitespace" }, () => {
-  assertEquals(isWhitespace(" "), true);
-  assertEquals(isWhitespace("\t"), true);
-  assertEquals(isWhitespace("\r"), true);
-  assertEquals(isWhitespace("\n"), true);
-  assertEquals(isWhitespace(""), false);
-  assertEquals(isWhitespace("n"), false);
-});
-
-async function consumeWhitespace(buffer: StreamBuffer): Promise<void> {
-  while (isWhitespace(await buffer.peek())) {
-    await buffer.next();
-  }
-}
-
-Deno.test({ name: "consumeWhitespace" }, async () => {
-  const buffer = mockStreamBuffer("1 2\t3\n4\r5 \r\t\n\t\r 6");
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "1");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "2");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "3");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "4");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "5");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "6");
-  await buffer.next();
-  await consumeWhitespace(buffer);
-  assertEquals(await buffer.peek(), "");
-});
-
-type DecodedJSONValue = boolean | null | string | number | unknown[] | {
-  [key: string]: unknown;
-};
-
