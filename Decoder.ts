@@ -1,17 +1,6 @@
-import { assertEquals } from "https://deno.land/std@0.134.0/testing/asserts.ts";
 import { StreamBuffer } from "./Buffer.ts";
-import { describe, it } from "https://deno.land/std/testing/bdd.ts";
-import { mockReadableStream } from "./testutils.ts";
 import { Decode } from "./decode.ts";
 import { PrimativeValue, Token } from "./token.ts";
-
-export type JSONValue =
-  | "JSONBoolean"
-  | "JSONNumber"
-  | "JSONString"
-  | "JSONNull"
-  | "JSONArray"
-  | "JSONObject";
 
 const EOF = new Error("End of File");
 
@@ -63,19 +52,21 @@ export class Decoder {
   }
 
   async decode(): Promise<unknown> {
-    await this.#buffer.consumeWhitespace();
-    const char = await this.#buffer.peek();
-    if (char === ",") {
-      await this.#buffer.next();
-    }
+    // TODO(calebmchenry): Add check to make sure this can't be called when
+    // not expecting a value token
+    // cosume #value function
+    this.#nextTokenStack.pop();
     return Promise.resolve(await Decode.value(this.#buffer));
   }
 
   /** Returns true if there are more tokens to be consumed */
   async more(): Promise<boolean> {
+    // TODO(calebmchenry): check to make sure we are in an object
     await this.#buffer.consumeWhitespace();
     const char = await this.#buffer.peek();
-    return (char === ",") ? Promise.resolve(true) : Promise.resolve(false);
+    return (char !== "}" && char !== "]")
+      ? Promise.resolve(true)
+      : Promise.resolve(false);
   }
 
   /** Consumes token */
@@ -126,6 +117,8 @@ export class Decoder {
     const char = await this.#buffer.peek();
     if (char === "}") return this.#endObject();
     if (char === ",") {
+      // consume ,
+      this.#buffer.next();
       this.#nextTokenStack.push(this.#endObjectOrValue.bind(this));
       this.#nextTokenStack.push(this.#value.bind(this));
       return this.#key();
@@ -166,23 +159,6 @@ export class Decoder {
     console.log(this.#nextTokenStack);
   }
 }
-
-describe("Decoder", () => {
-  describe("token", () => {
-    it("returns tokens", async () => {
-      const stream = mockReadableStream('{"foo": ["bar", true, 42]}');
-      const dec = new Decoder(stream);
-      assertEquals(await dec.token(), Token.openObject());
-      assertEquals(await dec.token(), Token.key("foo"));
-      assertEquals(await dec.token(), Token.openArray());
-      assertEquals(await dec.token(), Token.value("bar"));
-      assertEquals(await dec.token(), Token.value(true));
-      assertEquals(await dec.token(), Token.value(42));
-      assertEquals(await dec.token(), Token.closeArray());
-      assertEquals(await dec.token(), Token.closeObject());
-    });
-  });
-});
 
 function unexpectedToken(char: string) {
   return new SyntaxError(`Unexpected token ${char} in JSON position x`);

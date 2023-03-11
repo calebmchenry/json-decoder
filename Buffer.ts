@@ -1,6 +1,6 @@
 import { assertEquals } from "https://deno.land/std/testing/asserts.ts";
 import { describe, it } from "https://deno.land/std/testing/bdd.ts";
-import { mockReadableStream, mockStreamBuffer } from "./testutils.ts";
+import { mockReadableStream } from "./testutils.ts";
 import { isWhitespace } from "./utils.ts";
 
 export class StreamBuffer {

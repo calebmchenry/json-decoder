@@ -1,4 +1,4 @@
-import {StreamBuffer} from './Buffer.ts'
+import { StreamBuffer } from "./Buffer.ts";
 
 export function mockStreamBuffer(str: string) {
   const stream = new ReadableStream({

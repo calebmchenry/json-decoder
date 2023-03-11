@@ -6,5 +6,5 @@ function unexpectedEnd() {
 }
 
 function unexpectedToken(char: string) {
-  return new SyntaxError(`Unexpected token ${char} in JSON position x`);
+  return new SyntaxError(`Unexpected token ${char} in JSON`);
 }
